@@ -238,6 +238,7 @@ def save_data_loop():
 # --- REMOVED compress_daily_files ---
 
 def run_git_command(command_list):
+    """Helper function to run a Git command."""
     print(f"Running: {' '.join(command_list)}")
     try:
         result = subprocess.run(
@@ -255,7 +256,33 @@ def run_git_command(command_list):
         print(e.stderr)
         return False
 
+# --- NEW: Helper function to get file paths ---
+def get_todays_file_paths():
+    """
+    Gets the list of relative file paths that were created today.
+    """
+    today_date_str = datetime.now(IST).strftime('%Y-%m-%d')
+    file_paths = []
+    
+    for stock in config.STOCKS_TO_TRACK:
+        symbol = stock['symbol']
+        symbol_folder = os.path.join(BASE_DATA_FOLDER, symbol)
+        csv_filename = f"{symbol_folder}/{today_date_str}_{symbol}_snap_quote.csv"
+
+        if os.path.exists(csv_filename):
+            # Get the path relative to the git repo root
+            relative_path = os.path.relpath(csv_filename, GIT_REPO_PATH)
+            # Git always uses forward slashes, even on Windows
+            file_paths.append(relative_path.replace(os.path.sep, '/'))
+        else:
+            print(f"Warning: Expected file not found, skipping: {csv_filename}")
+            
+    return file_paths
+
 def clean_local_data_folder():
+    """
+    Deletes the entire data folder from the local server after a successful push.
+    """
     print(f"--- Deleting local data folder: {BASE_DATA_FOLDER} ---")
     try:
         shutil.rmtree(BASE_DATA_FOLDER)
@@ -263,26 +290,40 @@ def clean_local_data_folder():
     except Exception as e:
         print(f"Error deleting data folder: {e}")
 
+# --- MODIFIED: This function is now correct ---
 def push_to_github():
     print("--- Starting End-of-Day GitHub Push ---")
     commit_message = f"Data: Auto-commit for {datetime.now(IST).strftime('%Y-%m-%d')}"
     
+    # 1. Pull (will ignore data folder due to .gitignore)
     if not run_git_command(["git", "pull"]):
         print("Git pull failed. Aborting push.")
         return
         
-    # Force-add the uncompressed .csv files
-    if not run_git_command(["git", "add", "--force", "live_market_data/"]):
+    # 2. Get the list of *specific files* we created today
+    todays_files = get_todays_file_paths()
+    if not todays_files:
+        print("No new data files found to commit.")
+        return
+
+    # 3. Build the 'git add --force' command with only the new files
+    add_command = ["git", "add", "--force"]
+    add_command.extend(todays_files)
+
+    if not run_git_command(add_command):
         print("Git add --force failed. Aborting push.")
         return
         
+    # 4. Commit
     if not run_git_command(["git", "commit", "-m", commit_message]):
         print("Git commit failed. (Maybe no changes to commit?)")
     
+    # 5. Push
     if not run_git_command(["git", "push"]):
         print("Git push failed.")
     else:
         print("--- GitHub Push Successful ---")
+        # 6. Clean up local files
         clean_local_data_folder()
 
 # --- 11. Direct WebSocket Callbacks ---
