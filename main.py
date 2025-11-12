@@ -290,26 +290,21 @@ def clean_local_data_folder():
     except Exception as e:
         print(f"Error deleting data folder: {e}")
 
-# --- MODIFIED: This function is now correct ---
 def push_to_github():
     print("--- Starting End-of-Day GitHub Push ---")
     commit_message = f"Data: Auto-commit for {datetime.now(IST).strftime('%Y-%m-%d')}"
     
-    # 1. Pull (will ignore data folder due to .gitignore)
     if not run_git_command(["git", "pull"]):
         print("Git pull failed. Aborting push.")
         return
         
-    # 2. Get the list of *specific files* we created today
     todays_files = get_todays_file_paths()
     if not todays_files:
         print("No new data files found to commit.")
         return
 
-    # 3. Build the 'git add --force' command with only the new files
     add_command = ["git", "add", "--force"]
     add_command.extend(todays_files)
-
     if not run_git_command(add_command):
         print("Git add --force failed. Aborting push.")
         return
@@ -318,8 +313,7 @@ def push_to_github():
     if not run_git_command(["git", "commit", "-m", commit_message]):
         print("Git commit failed. (Maybe no changes to commit?)")
     
-    # 5. Push
-    if not run_git_command(["git", "push"]):
+    if not run_git_command(["git", "push", "origin", "HEAD:main"]):
         print("Git push failed.")
     else:
         print("--- GitHub Push Successful ---")
