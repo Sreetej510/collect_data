@@ -183,7 +183,7 @@ def send_heartbeat(ws):
     global keep_running_threads
     while keep_running_threads:
         try:
-            time.sleep(20)
+            time.sleep(10)
             if keep_running_threads:
                 ws.send("ping")
         except:
