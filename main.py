@@ -6,6 +6,7 @@ import struct # For binary parsing
 import threading # For the heartbeat AND batching
 import os
 import csv
+import logging # For logging
 # import gzip # Removed
 import shutil # For compression
 import subprocess # To run Git commands
@@ -29,10 +30,47 @@ IST = pytz.timezone('Asia/Kolkata')
 MARKET_OPEN = datetime_time(9, 15)
 MARKET_CLOSE = datetime_time(15, 30)
 HOLIDAYS_LIST = config.HOLIDAYS_LIST
-print(f"Loaded {len(HOLIDAYS_LIST)} holidays from config.py")
+
+# --- 3. Logging Setup ---
+def setup_logging():
+    """
+    Sets up logging to write all logs to a daily file and errors to console.
+    """
+    log_dir = os.path.join(SCRIPT_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    current_date_str = datetime.now(IST).strftime('%Y-%m-%d')
+    log_filename = os.path.join(log_dir, f"log_{current_date_str}.txt")
+    
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Clear existing handlers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+        
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+    # File Handler: Log EVERYTHING (INFO and above)
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    
+    # Console Handler: Log ERRORS only
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.ERROR)
+    console_handler.setFormatter(formatter)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    print(f"Logging initialized. Writing to {log_filename}")
+    return logger
+
+logging.info(f"Loaded {len(HOLIDAYS_LIST)} holidays from config.py")
 
 
-# --- 3. Global Variables ---
+# --- 4. Global Variables ---
 csv_writers = {}
 csv_files = {}
 data_buffer = []
@@ -56,26 +94,26 @@ SNAP_QUOTE_HEADER = [
     'sell_price_5', 'sell_qty_5', 'sell_orders_5',
 ]
 
-# --- 4. Login Function ---
+# --- 5. Login Function ---
 def loginUser():
-    print("Logging in to Angel One...")
+    logging.info("Logging in to Angel One...")
     smartApi = SmartConnect(config.API_KEY)
     try:
         totp = pyotp.TOTP(config.TOTP_CODE).now()
     except Exception as e:
-        print(f"Invalid TOTP Code: {e}")
+        logging.error(f"Invalid TOTP Code: {e}")
         raise e
     data = smartApi.generateSession(config.CLIENT_CODE, config.PASSWORD, totp)
     if not data['status']:
-        print(f"Login Failed: {data}")
+        logging.error(f"Login Failed: {data}")
         raise Exception("Login failed")
-    print("Session generated. Getting tokens...")
+    logging.info("Session generated. Getting tokens...")
     refreshToken = data['data']['refreshToken']
     token_data = smartApi.generateToken(refreshToken)
     if not token_data['status']:
-        print(f"Failed to get tokens: {token_data}")
+        logging.error(f"Failed to get tokens: {token_data}")
         raise Exception("Token generation failed")
-    print("Login Successful.")
+    logging.info("Login Successful.")
     return {
         "jwt_token": token_data['data']['jwtToken'].replace("Bearer ", ""),
         "feed_token": token_data['data']['feedToken'],
@@ -83,42 +121,30 @@ def loginUser():
         "api_key": config.API_KEY
     }
 
-# --- 5. CSV Management ---
+# --- 6. CSV Management (Modified for Raw Storage) ---
 def initialize_csv_writers():
-    global csv_writers, csv_files, data_buffer, buffer_lock
+    """
+    Creates the raw data directory for the current date.
+    No longer opens individual stock files upfront.
+    """
+    global csv_writers, csv_files
+    # Clear globals just in case
+    csv_writers = {}
+    csv_files = {}
+    
     current_date = datetime.now(IST).strftime('%Y-%m-%d')
-    print(f"Initializing CSV files for date: {current_date}")
-    
-    data_buffer = []
-    buffer_lock = threading.Lock()
-    
-    for stock in config.STOCKS_TO_TRACK: 
-        symbol = stock['symbol']
-        token = stock['token']
-        symbol_folder = os.path.join(BASE_DATA_FOLDER, symbol)
-        os.makedirs(symbol_folder, exist_ok=True)
-        filename = f"{symbol_folder}/{current_date}_{symbol}_snap_quote.csv"
-        file_exists = os.path.isfile(filename)
-        
-        f = open(filename, 'a', newline='')
-        writer = csv.writer(f)
-        
-        if not file_exists:
-            writer.writerow(SNAP_QUOTE_HEADER)
-            
-        csv_files[token] = f
-        csv_writers[token] = writer
-    print(f"CSV files successfully initialized in '{BASE_DATA_FOLDER}' folder.")
+    raw_dir = os.path.join(BASE_DATA_FOLDER, 'raw', current_date)
+    os.makedirs(raw_dir, exist_ok=True)
+    logging.info(f"Initialized raw data directory: {raw_dir}")
 
 def close_csv_files():
-    global csv_writers, csv_files
-    print("Closing all CSV files...")
-    for f in csv_files.values():
-        f.close()
-    csv_files = {}
-    csv_writers = {}
+    """
+    No longer needed to close per-stock files, but kept for compatibility 
+    if we have any lingering handles.
+    """
+    pass
 
-# --- 6. Market Status Check ---
+# --- 7. Market Status Check ---
 def is_market_open_day(date_to_check):
     """Helper function to check if a specific date is a trading day."""
     if date_to_check.weekday() >= 5: # 5=Sat, 6=Sun
@@ -134,7 +160,7 @@ def is_market_open():
         return False
     return MARKET_OPEN <= now_ist.time() <= MARKET_CLOSE
 
-# --- 7. Parser ---
+# --- 8. Parser ---
 def parse_snap_quote_data(binary_data):
     if len(binary_data) != 379: return None
     try:
@@ -175,10 +201,10 @@ def parse_snap_quote_data(binary_data):
             "52wk_high": high_52wk, "52wk_low": low_52wk
         }
     except Exception as e:
-        print(f"Error parsing binary data: {e}")
+        logging.error(f"Error parsing binary data: {e}")
         return None
 
-# --- 8. Heartbeat Function ---
+# --- 9. Heartbeat Function ---
 def send_heartbeat(ws):
     global keep_running_threads
     while keep_running_threads:
@@ -189,7 +215,7 @@ def send_heartbeat(ws):
         except:
             break
 
-# --- 9. Batch Saving ---
+# --- 10. Batch Saving (to Raw Minute Files) ---
 def save_buffer_to_disk():
     global data_buffer
     data_to_save = []
@@ -200,33 +226,55 @@ def save_buffer_to_disk():
         data_to_save = data_buffer.copy()
         data_buffer.clear()
     
-    print(f"[{datetime.now(IST)}] Writing batch of {len(data_to_save)} ticks to disk...")
+    start_time = time.time()
+    
+    # 1. Group data by minute (YYYY-MM-DD_HH-MM)
+    grouped_data = {} # { "2023-10-27_09-15": [row_list, row_list...] }
     
     for parsed_data in data_to_save:
-        token = parsed_data['token']
-        writer = csv_writers.get(token)
-        file_handle = csv_files.get(token)
+        # Construct the row data once
+        row_data = [
+            parsed_data['token'], parsed_data['exchange_timestamp'], parsed_data['ltp'],
+            parsed_data['last_traded_quantity'], parsed_data['avg_trade_price'],
+            parsed_data['volume'], parsed_data['total_buy_qty'], parsed_data['total_sell_qty'],
+            parsed_data['open'], parsed_data['high'], parsed_data['low'], parsed_data['close'],
+            parsed_data['open_interest'],
+            parsed_data['upper_circuit'], parsed_data['lower_circuit'],
+            parsed_data['52wk_high'], parsed_data['52wk_low']
+        ]
+        for item in parsed_data['best_five_data']:
+            row_data.extend([item['price'], item['qty'], item['orders']])
         
-        if writer and file_handle:
-            try:
-                row_data = [
-                    parsed_data['token'], parsed_data['exchange_timestamp'], parsed_data['ltp'],
-                    parsed_data['last_traded_quantity'], parsed_data['avg_trade_price'],
-                    parsed_data['volume'], parsed_data['total_buy_qty'], parsed_data['total_sell_qty'],
-                    parsed_data['open'], parsed_data['high'], parsed_data['low'], parsed_data['close'],
-                    parsed_data['open_interest'],
-                    parsed_data['upper_circuit'], parsed_data['lower_circuit'],
-                    parsed_data['52wk_high'], parsed_data['52wk_low']
-                ]
-                for item in parsed_data['best_five_data']:
-                    row_data.extend([item['price'], item['qty'], item['orders']])
-                
-                writer.writerow(row_data)
-            except Exception as e:
-                print(f"Error writing row to CSV: {e}")
+        ts = parsed_data['exchange_timestamp']
+        date_str = ts.strftime('%Y-%m-%d')
+        time_str = ts.strftime('%H-%M')
+        
+        key = (date_str, time_str)
+        if key not in grouped_data:
+            grouped_data[key] = []
+        grouped_data[key].append(row_data)
 
-    for f in csv_files.values():
-        f.flush()
+    logging.info(f"Writing {len(data_to_save)} records to {len(grouped_data)} raw files...")
+
+    # 2. Write to files
+    for (date_str, time_str), rows in grouped_data.items():
+        raw_dir = os.path.join(BASE_DATA_FOLDER, 'raw', date_str)
+        os.makedirs(raw_dir, exist_ok=True)
+        
+        filename = os.path.join(raw_dir, f"{time_str}.csv")
+        file_exists = os.path.isfile(filename)
+        
+        try:
+            with open(filename, 'a', newline='') as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(SNAP_QUOTE_HEADER)
+                writer.writerows(rows)
+        except Exception as e:
+            logging.error(f"Error writing to raw file {filename}: {e}")
+
+    final_end_time = time.time()
+    logging.info(f"Write complete. Took {final_end_time - start_time:.2f}s")
 
 def save_data_loop():
     global keep_running_threads
@@ -234,12 +282,78 @@ def save_data_loop():
         time.sleep(SAVE_INTERVAL_SECONDS)
         save_buffer_to_disk()
 
-# --- 10. Git Functions ---
-# --- REMOVED compress_daily_files ---
+# --- 11. EOD Processing (Split Raw -> Individual) ---
+def process_raw_data_to_individual_files():
+    logging.info("--- Starting Post-Processing: Splitting Raw Data ---")
+    current_date_str = datetime.now(IST).strftime('%Y-%m-%d')
+    raw_dir = os.path.join(BASE_DATA_FOLDER, 'raw', current_date_str)
+    
+    if not os.path.exists(raw_dir):
+        logging.info(f"No raw data directory found for {current_date_str}. Skipping processing.")
+        return
+
+    token_map = {stock['token']: stock['symbol'] for stock in config.STOCKS_TO_TRACK}
+    file_handles = {}
+    writers = {}
+    
+    def get_writer(token):
+        if token in writers:
+            return writers[token]
+        
+        symbol = token_map.get(token)
+        if not symbol:
+            return None # Unknown token
+            
+        symbol_folder = os.path.join(BASE_DATA_FOLDER, symbol)
+        os.makedirs(symbol_folder, exist_ok=True)
+        out_filename = f"{symbol_folder}/{current_date_str}_{symbol}_snap_quote.csv"
+        
+        exists = os.path.isfile(out_filename)
+        f = open(out_filename, 'a', newline='')
+        w = csv.writer(f)
+        if not exists:
+            w.writerow(SNAP_QUOTE_HEADER)
+            
+        file_handles[token] = f
+        writers[token] = w
+        return w
+
+    raw_files = sorted([f for f in os.listdir(raw_dir) if f.endswith('.csv')])
+    logging.info(f"Found {len(raw_files)} raw minute-files to process.")
+    
+    total_records = 0
+    
+    for rf in raw_files:
+        path = os.path.join(raw_dir, rf)
+        logging.info(f"Processing {rf}...")
+        try:
+            with open(path, 'r') as f_in:
+                reader = csv.reader(f_in)
+                header = next(reader, None) # skip header
+                
+                for row in reader:
+                    if not row: continue
+                    token = row[0]
+                    w = get_writer(token)
+                    if w:
+                        w.writerow(row)
+                        total_records += 1
+        except Exception as e:
+            logging.error(f"Failed to process {rf}: {e}")
+
+    logging.info("Closing all destination files...")
+    for f in file_handles.values():
+        f.flush()
+        f.close()
+        
+    logging.info(f"--- Post-Processing Complete. Processed {total_records} records. ---")
+
+
+# --- 12. Git Functions ---
 
 def run_git_command(command_list):
     """Helper function to run a Git command."""
-    print(f"Running: {' '.join(command_list)}")
+    logging.info(f"Running: {' '.join(command_list)}")
     try:
         result = subprocess.run(
             command_list,
@@ -249,14 +363,13 @@ def run_git_command(command_list):
             check=True,
             encoding='utf-8'
         )
-        print(result.stdout)
+        logging.info(result.stdout)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Git command failed:")
-        print(e.stderr)
+        logging.error(f"Git command failed:")
+        logging.error(e.stderr)
         return False
 
-# --- NEW: Helper function to get file paths ---
 def get_todays_file_paths():
     """
     Gets the list of relative file paths that were created today.
@@ -270,12 +383,8 @@ def get_todays_file_paths():
         csv_filename = f"{symbol_folder}/{today_date_str}_{symbol}_snap_quote.csv"
 
         if os.path.exists(csv_filename):
-            # Get the path relative to the git repo root
             relative_path = os.path.relpath(csv_filename, GIT_REPO_PATH)
-            # Git always uses forward slashes, even on Windows
             file_paths.append(relative_path.replace(os.path.sep, '/'))
-        else:
-            print(f"Warning: Expected file not found, skipping: {csv_filename}")
             
     return file_paths
 
@@ -283,49 +392,51 @@ def clean_local_data_folder():
     """
     Deletes the entire data folder from the local server after a successful push.
     """
-    print(f"--- Deleting local data folder: {BASE_DATA_FOLDER} ---")
+    logging.info(f"--- Deleting local data folder: {BASE_DATA_FOLDER} ---")
     try:
         shutil.rmtree(BASE_DATA_FOLDER)
-        print("Successfully deleted local data folder.")
+        logging.info("Successfully deleted local data folder.")
     except Exception as e:
-        print(f"Error deleting data folder: {e}")
+        logging.error(f"Error deleting data folder: {e}")
 
 def push_to_github():
-    print("--- Starting End-of-Day GitHub Push ---")
+    logging.info("--- Starting End-of-Day GitHub Push ---")
+    
+    # Process raw data first!
+    process_raw_data_to_individual_files()
+    
     commit_message = f"Data: Auto-commit for {datetime.now(IST).strftime('%Y-%m-%d')}"
     
     if not run_git_command(["git", "pull"]):
-        print("Git pull failed. Aborting push.")
+        logging.error("Git pull failed. Aborting push.")
         return
         
     todays_files = get_todays_file_paths()
     if not todays_files:
-        print("No new data files found to commit.")
+        logging.info("No new data files found to commit.")
         return
 
     add_command = ["git", "add", "--force"]
     add_command.extend(todays_files)
     if not run_git_command(add_command):
-        print("Git add --force failed. Aborting push.")
+        logging.error("Git add --force failed. Aborting push.")
         return
         
-    # 4. Commit
     if not run_git_command(["git", "commit", "-m", commit_message]):
-        print("Git commit failed. (Maybe no changes to commit?)")
+        logging.info("Git commit failed. (Maybe no changes to commit?)")
     
     if not run_git_command(["git", "push", "origin", "HEAD:main"]):
-        print("Git push failed.")
+        logging.error("Git push failed.")
     else:
-        print("--- GitHub Push Successful ---")
-        # 6. Clean up local files
+        logging.info("--- GitHub Push Successful ---")
         clean_local_data_folder()
 
-# --- 11. Direct WebSocket Callbacks ---
+# --- 13. Direct WebSocket Callbacks ---
 def on_open(ws):
     global keep_running_threads
     keep_running_threads = True 
     
-    print("--- WebSocket connection opened (Direct) ---")
+    logging.info("--- WebSocket connection opened (Direct) ---")
     threading.Thread(target=send_heartbeat, args=(ws,), daemon=True).start()
     threading.Thread(target=save_data_loop, daemon=True).start()
 
@@ -338,16 +449,16 @@ def on_open(ws):
         "tokenList": [ {"exchangeType": 1, "tokens": token_list} ]
       }
     }
-    print(f"Sending subscription: {json.dumps(subscription_request)}")
+    logging.info(f"Sending subscription: {json.dumps(subscription_request)}")
     ws.send(json.dumps(subscription_request))
-    print("Subscription request sent.")
+    logging.info("Subscription request sent.")
 
 def on_message(ws, message):
     if isinstance(message, str) and message == "pong":
         return
     
     if not is_market_open():
-        print(f"[{datetime.now(IST)}] Market is closed. Sending close signal...")
+        logging.info("Market is closed. Sending close signal...")
         ws.close()
         return
 
@@ -358,18 +469,18 @@ def on_message(ws, message):
             data_buffer.append(parsed_data)
 
 def on_error(ws, error):
-    print(f"WebSocket Error: {error}")
+    logging.error(f"WebSocket Error: {error}")
 
 def on_close(ws, close_status_code, close_msg):
     global keep_running_threads
     keep_running_threads = False 
     
-    print("--- WebSocket connection closed ---")
-    print("Saving any remaining data in buffer...")
+    logging.info("--- WebSocket connection closed ---")
+    logging.info("Saving any remaining data in buffer...")
     save_buffer_to_disk()
     close_csv_files()
 
-# --- 12. Main Server Supervisor Loop ---
+# --- 14. Main Server Supervisor Loop ---
 
 def get_seconds_until_market_open():
     """
@@ -397,12 +508,17 @@ def get_seconds_until_market_open():
 # --- MAIN SUPERVISOR LOOP ---
 if __name__ == "__main__":
     
+    setup_logging()
+    
     end_of_day_tasks_done = False
 
     while True: # The 24/7 "supervisor" loop
         try:
             if is_market_open():
-                print(f"[{datetime.now(IST)}] Market is OPEN. Starting collector.")
+                # Re-setup logging daily to ensure day rollover if script ran overnight
+                setup_logging()
+                
+                logging.info(f"Market is OPEN. Starting collector.")
                 end_of_day_tasks_done = False 
                 
                 auth_data = loginUser()
@@ -424,7 +540,7 @@ if __name__ == "__main__":
                                           on_close=on_close)
                 
                 ws.run_forever()
-                print("Collector has stopped.")
+                logging.info("Collector has stopped.")
                 
             else:
                 now_ist = datetime.now(IST)
@@ -436,22 +552,21 @@ if __name__ == "__main__":
                 )
                 
                 if is_after_market_close_today:
-                    print(f"[{now_ist}] Market just closed. Running end-of-day tasks...")
-                    # --- COMPRESSION CALL REMOVED ---
+                    logging.info("Market just closed. Running end-of-day tasks...")
                     push_to_github()
                     end_of_day_tasks_done = True
-                    print("End-of-day tasks complete.")
+                    logging.info("End-of-day tasks complete.")
 
                 seconds_to_sleep = get_seconds_until_market_open()
                 seconds_to_sleep += 3 # Add a 10-second buffer
                 
                 sleep_hours = seconds_to_sleep / 3600
-                print(f"[{now_ist}] Market is CLOSED. Sleeping for {sleep_hours:.2f} hours until next market open.")
+                logging.info(f"Market is CLOSED. Sleeping for {sleep_hours:.2f} hours until next market open.")
                 
                 time.sleep(seconds_to_sleep)
         
         except KeyboardInterrupt:
-            print("\nStopping server (Ctrl+C)...")
+            logging.info("\nStopping server (Ctrl+C)...")
             try:
                 keep_running_threads = False
                 ws.close()
@@ -459,8 +574,8 @@ if __name__ == "__main__":
                 pass
             break
         except Exception as e:
-            print(f"An unexpected error occurred in the main loop: {e}")
-            print("Restarting in 60 seconds...")
+            logging.error(f"An unexpected error occurred in the main loop: {e}")
+            logging.info("Restarting in 60 seconds...")
             time.sleep(60)
     
-    print("Script has terminated.")
+    logging.info("Script has terminated.")
