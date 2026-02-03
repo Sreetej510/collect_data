@@ -7,7 +7,6 @@ import threading # For the heartbeat AND batching
 import os
 import csv
 import logging # For logging
-# import gzip # Removed
 import shutil # For compression
 import subprocess # To run Git commands
 from SmartApi import SmartConnect
@@ -425,7 +424,16 @@ def push_to_github():
     if not run_git_command(["git", "commit", "-m", commit_message]):
         logging.info("Git commit failed. (Maybe no changes to commit?)")
     
-    if not run_git_command(["git", "push", "origin", "HEAD:main"]):
+    low_mem_push = [
+        "git",
+        "-c", "pack.window=0",          # Disable cross-file delta compression
+        "-c", "pack.threads=1",         # Use a single thread to save RAM
+        "-c", "pack.windowMemory=100m", # Cap memory usage for the packing window
+        "-c", "core.bigFileThreshold=10m",
+        "push", "origin", "HEAD:main"
+    ]
+
+    if not run_git_command(low_mem_push):
         logging.error("Git push failed.")
     else:
         logging.info("--- GitHub Push Successful ---")
