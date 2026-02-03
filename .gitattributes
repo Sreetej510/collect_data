@@ -1,0 +1,2 @@
+live_market_data/**/*.csv binary
+live_market_data/**/*.csv -delta
