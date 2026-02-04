@@ -415,7 +415,7 @@ def push_to_github():
         logging.info("No new data files found to commit.")
         return
 
-    add_command = ["git", "add", "--force"]
+    add_command = ["git", "add", "--force", "--sparse"]
     add_command.extend(todays_files)
     if not run_git_command(add_command):
         logging.error("Git add --force failed. Aborting push.")
