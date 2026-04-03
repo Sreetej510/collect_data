@@ -1,8 +1,8 @@
 # --- API Credentials ---
-API_KEY = "aazRBXHP"
+API_KEY = "Jqyds75u"
 CLIENT_CODE = "K52734956"
 PASSWORD = "1269"
-TOTP_CODE = "7GNO5BZYNPO25GEGENRVBJGJGM" # Your TOTP secret key
+TOTP_CODE = "47ed75be-c5e9-4777-b2e9-aa7df33ec6f8" # Your TOTP secret key
 
 STOCKS_TO_TRACK = [
     {'symbol': 'TATASTEEL-EQ', 'token': '3499', 'exchange': 'NSE'},
